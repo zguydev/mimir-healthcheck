@@ -4,7 +4,7 @@ FROM busybox:$BUSYBOX_IMAGE_TAG AS busybox
 FROM grafana/mimir:$MIMIR_IMAGE_TAG
 
 LABEL org.opencontainers.image.title="mimir-healthcheck" \
-      org.opencontainers.image.description="Grafana Mimir Dockerfile with healthcheck" \
+      org.opencontainers.image.description="Grafana Mimir Docker image with healthcheck" \
       org.opencontainers.image.source="https://github.com/zguydev/mimir-healthcheck" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.authors="zguydev <zguy@zguy.dev>"
