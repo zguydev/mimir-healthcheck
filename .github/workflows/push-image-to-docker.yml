@@ -1,0 +1,72 @@
+name: mirror to Docker Hub
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["build and push to GHCR"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror-from-ghcr:
+    name: Mirror image from GHCR to Docker Hub
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive repository name
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+      - name: Find latest grafana/mimir semver tag
+        id: latest
+        run: |
+          set -euo pipefail
+          # Fetch up to 100 recent tags from Docker Hub and select the latest X.Y.Z
+          LATEST=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100" \
+            | jq -r '.results[].name' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n1)
+          if [ -z "${LATEST}" ]; then
+            echo "No semver tags found on Docker Hub in 100 recent tags" >&2
+            exit 1
+          fi
+          echo "Latest upstream tag: ${LATEST}"
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Check if Docker Hub tag already exists
+        id: check
+        run: |
+          set -euo pipefail
+          IMAGE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}:${{ steps.latest.outputs.version }}"
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "Image already exists: $IMAGE"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image does not exist: $IMAGE"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mirror manifest from GHCR to Docker Hub
+        if: steps.check.outputs.exists == 'false'
+        run : |
+          set -euo pipefail
+          SRC="ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}"
+          DST_BASE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}"
+          docker buildx imagetools create \
+            --tag "${DST_BASE}:latest" \
+            --tag "${DST_BASE}:${{ steps.latest.outputs.version }}" \
+            "${SRC}"
+      - name: Up-to-date (no new version to mirror)
+        if: steps.check.outputs.exists == 'true'
+        run: echo "Docker Hub already has tag ${{ steps.latest.outputs.version }}"
