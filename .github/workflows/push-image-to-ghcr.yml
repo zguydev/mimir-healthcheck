@@ -42,7 +42,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ toLower(github.repository) }}:${{ steps.latest.outputs.version }}"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}"
           if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
             echo "Image already exists: $IMAGE"
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -62,8 +62,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ toLower(github.repository) }}:latest
-            ghcr.io/${{ toLower(github.repository) }}:${{ steps.latest.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}
           build-args: |
             MIMIR_IMAGE_TAG=${{ steps.latest.outputs.version }}
       - name: Up-to-date (no new version)
