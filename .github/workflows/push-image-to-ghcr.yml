@@ -1,4 +1,4 @@
-name: build and push mimir-healthcheck to GitHub Container Registry
+name: build and push to GHCR
 
 on:
   workflow_dispatch:
