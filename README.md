@@ -24,6 +24,7 @@ Run it (example):
 ```bash
 docker run --rm \
   -p 9009:9009 \
+  -v ./config.yaml:/etc/mimir/config.yaml:ro \
   ghcr.io/zguydev/mimir-healthcheck:latest \
   -config.file=/etc/mimir/config.yaml
 ```
@@ -34,6 +35,8 @@ services:
   mimir:
     image: ghcr.io/zguydev/mimir-healthcheck:latest
     command: ["-config.file=/etc/mimir/config.yaml"]
+    volumes:
+      - ./config.yaml:/etc/mimir/config.yaml
     ports:
       - "9009:9009"
     # Override healthcheck if you changed the internal port
