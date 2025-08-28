@@ -40,8 +40,8 @@ services:
     ports:
       - "9009:9009"
     # Override healthcheck if you changed the internal port
-    #healthcheck:
-    #  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9009/ready"]
+    # healthcheck:
+    #   test: ["CMD", "/healthcheck", "--port", "9009"]
     restart: unless-stopped
 ```
 
@@ -52,12 +52,11 @@ Default tags are defined in the [Dockerfile](./Dockerfile).
 ```bash
 docker build \
   --build-arg MIMIR_IMAGE_TAG=2.17.0 \
-  --build-arg BUSYBOX_IMAGE_TAG=1.37.0-uclibc \
   -t mimir-healthcheck:2.17.0 .
 ```
 
 ## Note
-This image only adds `wget` to the container for the healthcheck; it does not change how you configure or run Mimir.
+This image builds custom healthcheck binary and puts it inside container; it does not change how you configure or run Mimir.
 
 ## License
 MIT - see [LICENSE](./LICENSE)
