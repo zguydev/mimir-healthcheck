@@ -1,6 +1,8 @@
 # mimir-healthcheck
 > Grafana Mimir Docker image with healthcheck
 
+[![build and push to GHCR](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-ghcr.yml/badge.svg)](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-ghcr.yml)
+
 ## What is this?
 This repo provides a thin Docker image on top of `grafana/mimir` that adds the so desired Docker healthcheck. As the Grafana Mimir team decided to target Kubernetes-only deployments (see [issue #9034](https://github.com/grafana/mimir/issues/9034#issuecomment-2304042358)) this image exists for Docker/Podman users.
 
