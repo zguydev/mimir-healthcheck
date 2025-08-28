@@ -2,6 +2,7 @@
 > Grafana Mimir Docker image with healthcheck
 
 [![build and push to GHCR](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-ghcr.yml/badge.svg)](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-ghcr.yml)
+[![mirror to Docker Hub](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-docker.yml/badge.svg)](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-docker.yml)
 
 ## What is this?
 This repo provides a thin Docker image on top of `grafana/mimir` that adds the so desired Docker healthcheck. As the Grafana Mimir team decided to target Kubernetes-only deployments (see [issue #9034](https://github.com/grafana/mimir/issues/9034#issuecomment-2304042358)) this image exists for Docker/Podman users.
@@ -17,7 +18,7 @@ Mimir is expected to listen on port `9009` inside the container (its preferred p
 ## Quick start
 Pull the image (change the tag if needed):
 ```bash
-docker pull ghcr.io/zguydev/mimir-healthcheck:latest
+docker pull zguydev/mimir-healthcheck:latest
 ```
 Run it (example):
 
@@ -25,7 +26,7 @@ Run it (example):
 docker run --rm \
   -p 9009:9009 \
   -v ./config.yaml:/etc/mimir/config.yaml:ro \
-  ghcr.io/zguydev/mimir-healthcheck:latest \
+  zguydev/mimir-healthcheck:latest \
   -config.file=/etc/mimir/config.yaml
 ```
 
@@ -33,7 +34,7 @@ docker run --rm \
 ```yaml
 services:
   mimir:
-    image: ghcr.io/zguydev/mimir-healthcheck:latest
+    image: zguydev/mimir-healthcheck:latest
     command: ["-config.file=/etc/mimir/config.yaml"]
     volumes:
       - ./config.yaml:/etc/mimir/config.yaml
@@ -50,13 +51,20 @@ Use this method if you want to use base image versions that aren't provided by t
 Default tags are defined in the [Dockerfile](./Dockerfile).
 
 ```bash
+git clone https://github.com/zguydev/mimir-healthcheck
+cd mimir-healthcheck
 docker build \
   --build-arg MIMIR_IMAGE_TAG=2.17.0 \
   -t mimir-healthcheck:2.17.0 .
 ```
 
+## Version tags
+`zguydev/mimir-healthcheck` mirrors upstream Mimir semver tags like `2.17.0` and prereleases like `2.17.0-rc.0`. Only stable releases receive the `latest` tag; prereleases do not.
+
+Images are published to [Docker Hub](https://hub.docker.com/r/zguydev/mimir-healthcheck) and [GitHub Container Registry](https://ghcr.io/zguydev/mimir-healthcheck).
+
 ## Note
-This image builds custom healthcheck binary and puts it inside container; it does not change how you configure or run Mimir.
+This image builds a custom healthcheck binary and puts it inside container; it does not change how you configure or run Mimir.
 
 ## License
 MIT - see [LICENSE](./LICENSE)
