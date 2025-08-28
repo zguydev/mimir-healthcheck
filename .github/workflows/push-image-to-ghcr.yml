@@ -16,22 +16,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Find latest grafana/mimir semver tag
-        id: latest
+      - name: Detect newest and max upstream semver tags
+        id: upstream
         run: |
           set -euo pipefail
-          # Fetch up to 100 recent tags from Docker Hub and select the latest X.Y.Z
-          LATEST=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100" \
+          DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
+          # Most recently updated semver (could be a backport like 2.16.x after 2.17.0)
+          NEWEST=$(echo "$DATA" \
+            | jq -r '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.last_updated) | last | .name')
+          # Maximum semver (the highest X.Y.Z)
+          MAX=$(echo "$DATA" \
             | jq -r '.results[].name' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
             | tail -n1)
-          if [ -z "${LATEST}" ]; then
+          if [ -z "${NEWEST}" ] || [ -z "${MAX}" ]; then
             echo "No semver tags found on Docker Hub in 100 recent tags" >&2
             exit 1
           fi
-          echo "Latest upstream tag: ${LATEST}"
-          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Newest upstream tag: ${NEWEST} (max semver: ${MAX})"
+          echo "version=${NEWEST}" >> "$GITHUB_OUTPUT"
+          echo "max_version=${MAX}" >> "$GITHUB_OUTPUT"
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -42,7 +47,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}"
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.version }}"
           if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
             echo "Image already exists: $IMAGE"
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -56,6 +61,20 @@ jobs:
       - name: Set up Docker Buildx
         if: steps.check.outputs.exists == 'false'
         uses: docker/setup-buildx-action@v3
+      - name: Compute tags to push
+        if: steps.check.outputs.exists == 'false'
+        id: taglist
+        run: |
+          set -euo pipefail
+          TAGS=("ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.version }}")
+          if [ "${{ steps.upstream.outputs.version }}" = "${{ steps.upstream.outputs.max_version }}" ]; then
+            TAGS=("ghcr.io/${{ github.repository }}:latest" "${TAGS[@]}")
+          fi
+          {
+            echo "list<<EOF"
+            printf '%s\n' "${TAGS[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Build and push image
         if: steps.check.outputs.exists == 'false'
         uses: docker/build-push-action@v6
@@ -63,11 +82,9 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}
+          tags: ${{ steps.taglist.outputs.list }}
           build-args: |
-            MIMIR_IMAGE_TAG=${{ steps.latest.outputs.version }}
+            MIMIR_IMAGE_TAG=${{ steps.upstream.outputs.version }}
       - name: Up-to-date (no new version)
         if: steps.check.outputs.exists == 'true'
         run: echo "No new upstream semver tag to build"

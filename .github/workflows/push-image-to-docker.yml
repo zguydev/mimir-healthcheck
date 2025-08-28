@@ -18,22 +18,27 @@ jobs:
       - name: Derive repository name
         id: repo
         run: echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
-      - name: Find latest grafana/mimir semver tag
-        id: latest
+      - name: Detect newest and max upstream semver tags
+        id: upstream
         run: |
           set -euo pipefail
-          # Fetch up to 100 recent tags from Docker Hub and select the latest X.Y.Z
-          LATEST=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100" \
+          DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
+          # Most recently updated semver (could be a backport like 2.16.x after 2.17.0)
+          NEWEST=$(echo "$DATA" \
+            | jq -r '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.last_updated) | last | .name')
+          # Maximum semver (the highest X.Y.Z)
+          MAX=$(echo "$DATA" \
             | jq -r '.results[].name' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
             | tail -n1)
-          if [ -z "${LATEST}" ]; then
+          if [ -z "${NEWEST}" ] || [ -z "${MAX}" ]; then
             echo "No semver tags found on Docker Hub in 100 recent tags" >&2
             exit 1
           fi
-          echo "Latest upstream tag: ${LATEST}"
-          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Newest upstream tag: ${NEWEST} (max semver: ${MAX})"
+          echo "version=${NEWEST}" >> "$GITHUB_OUTPUT"
+          echo "max_version=${MAX}" >> "$GITHUB_OUTPUT"
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -49,7 +54,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          IMAGE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}:${{ steps.latest.outputs.version }}"
+          IMAGE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}:${{ steps.upstream.outputs.version }}"
           if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
             echo "Image already exists: $IMAGE"
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -61,12 +66,13 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run : |
           set -euo pipefail
-          SRC="ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}"
+          SRC="ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.version }}"
           DST_BASE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}"
-          docker buildx imagetools create \
-            --tag "${DST_BASE}:latest" \
-            --tag "${DST_BASE}:${{ steps.latest.outputs.version }}" \
-            "${SRC}"
+          TAG_ARGS=("--tag" "${DST_BASE}:${{ steps.upstream.outputs.version }}")
+          if [ "${{ steps.upstream.outputs.version }}" = "${{ steps.upstream.outputs.max_version }}" ]; then
+            TAG_ARGS=("--tag" "${DST_BASE}:latest" "${TAG_ARGS[@]}")
+          fi
+          docker buildx imagetools create "${TAG_ARGS[@]}" "${SRC}"
       - name: Up-to-date (no new version to mirror)
         if: steps.check.outputs.exists == 'true'
-        run: echo "Docker Hub already has tag ${{ steps.latest.outputs.version }}"
+        run: echo "Docker Hub already has tag ${{ steps.upstream.outputs.version }}"
