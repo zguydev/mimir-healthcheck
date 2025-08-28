@@ -53,9 +53,10 @@ Default tags are defined in the [Dockerfile](./Dockerfile).
 ```bash
 git clone https://github.com/zguydev/mimir-healthcheck
 cd mimir-healthcheck
+TAG=2.17.0
 docker build \
-  --build-arg MIMIR_IMAGE_TAG=2.17.0 \
-  -t mimir-healthcheck:2.17.0 .
+  --build-arg MIMIR_IMAGE_TAG=$TAG \
+  -t mimir-healthcheck:$TAG .
 ```
 
 ## Version tags
