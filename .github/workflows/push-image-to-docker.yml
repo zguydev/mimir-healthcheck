@@ -25,7 +25,7 @@ jobs:
           DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
           # Most recently updated semver (could be a backport like 2.16.x after 2.17.0)
           NEWEST=$(echo "$DATA" \
-            | jq -r '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.last_updated) | last | .name')
+            | jq -r '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$"))] | sort_by(.last_updated) | last | .name')
           # Maximum semver (the highest X.Y.Z)
           MAX=$(echo "$DATA" \
             | jq -r '.results[].name' \
