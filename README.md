@@ -1,5 +1,5 @@
 # mimir-healthcheck
-> Grafana Mimir Docker image with healthcheck
+> Grafana Mimir image with healthcheck
 
 [![build and push to GHCR](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-ghcr.yml/badge.svg)](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-ghcr.yml)
 [![mirror to Docker Hub](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-docker.yml/badge.svg)](https://github.com/zguydev/mimir-healthcheck/actions/workflows/push-image-to-docker.yml)

@@ -21,7 +21,7 @@ COPY --from=build --chown=nonroot:nonroot /app/healthcheck /healthcheck
 HEALTHCHECK --interval=3s --timeout=2s --retries=10 CMD [ "/healthcheck", "--port", "9009" ]
 
 LABEL org.opencontainers.image.title="mimir-healthcheck" \
-      org.opencontainers.image.description="Grafana Mimir Docker image with healthcheck" \
+      org.opencontainers.image.description="Grafana Mimir image with healthcheck" \
       org.opencontainers.image.source="https://github.com/zguydev/mimir-healthcheck" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.authors="zguydev <zguy@zguy.dev>"
