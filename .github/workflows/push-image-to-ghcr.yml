@@ -1,0 +1,71 @@
+name: build and push mimir-healthcheck to GitHub Container registry
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 */6 * * *' # every 6 hours
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-and-build:
+    name: Detect new upstream and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Find latest grafana/mimir semver tag
+        id: latest
+        run: |
+          set -euo pipefail
+          # Fetch up to 100 recent tags from Docker Hub and select the latest X.Y.Z
+          LATEST=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100" \
+            | jq -r '.results[].name' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n1)
+          if [ -z "${LATEST}" ]; then
+            echo "No semver tags found on Docker Hub in 100 recent tags" >&2
+            exit 1
+          fi
+          echo "Latest upstream tag: ${LATEST}"
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_TOKEN }}
+      - name: Check if GHCR tag already exists
+        id: check
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}"
+          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "Image already exists: $IMAGE"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image does not exist: $IMAGE"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build and push image
+        if: steps.check.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.latest.outputs.version }}
+          build-args: |
+            MIMIR_IMAGE_TAG=${{ steps.latest.outputs.version }}
+      - name: Up-to-date (no new version)
+        if: steps.check.outputs.exists == 'true'
+        run: echo "No new upstream semver tag to build"
