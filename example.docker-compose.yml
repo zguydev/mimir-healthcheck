@@ -1,0 +1,14 @@
+services:
+  mimir:
+    image: zguydev/mimir-healthcheck:latest
+    command: ["-config.file=/etc/mimir/config.yaml"]
+    volumes:
+      - ./config.yaml:/etc/mimir/config.yaml
+    ports:
+      - "9009:9009"
+    healthcheck:
+      test: ["CMD", "/healthcheck", "--port", "9009"] # Override the port argument if you changed it in Mimir config
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
