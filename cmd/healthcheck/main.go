@@ -13,7 +13,7 @@ func main() {
 	flag.IntVar(&port, "port", 9009, "Mimir port")
 	flag.Parse()
 	if port < 1 || port > 65535 {
-		fmt.Fprintln(os.Stderr, "port argument must be between 1 and 65535")
+		fmt.Fprintln(os.Stderr, "healthcheck: port argument must be between 1 and 65535")
 		os.Exit(1)
 	}
 
@@ -27,7 +27,7 @@ func main() {
 		_ = resp.Body.Close()
 	}()
 
-	const limit = 64 * 1024
+	const limit = 64 << 10 // 64 KiB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthcheck: failed to read response body:", err)
