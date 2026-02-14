@@ -75,7 +75,12 @@ jobs:
           done < <(echo "$CANDIDATES_JSON" | jq -r '.[]')
 
           # Output missing tags as JSON array for matrix
-          MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -s .)
+          if [ "${#MISSING[@]}" -eq 0 ]; then
+            MISSING_JSON='[]'
+          else
+            MISSING_JSON=$(printf '%s\n' "${MISSING[@]}" | jq -R . | jq -s -c .)
+          fi
+
           echo "missing_tags=${MISSING_JSON}" >> "$GITHUB_OUTPUT"
           echo "max_version=${MAX}" >> "$GITHUB_OUTPUT"
   build:
