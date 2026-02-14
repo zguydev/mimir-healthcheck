@@ -158,8 +158,8 @@ jobs:
       - run: echo "No missing tags to build in GHCR window"
   ensure-latest:
     name: Ensure GHCR latest points to max semver
-    needs: [detect, build, up_to_date]
-    if: needs.detect.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    needs: detect
+    if: needs.detect.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
@@ -170,18 +170,27 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Retag as latest to current max stable semver (no rebuild)
+      - name: Detect and fix latest tag if needed
         run: |
           set -euo pipefail
           MAX="${{ needs.detect.outputs.max_version }}"
           REPO="ghcr.io/${{ github.repository }}"
 
           if ! docker manifest inspect "${REPO}:${MAX}" >/dev/null 2>&1; then
-            echo "Max version ${MAX} not present in GHCR; not updating :latest" >&2
+            echo "Max version ${MAX} not present in GHCR; not updating latest tag" >&2
             exit 0
           fi
 
-          echo "Ensuring ${REPO}:latest -> ${REPO}:${MAX}"
-          docker buildx imagetools create \
-            --tag "${REPO}:latest" \
-            "${REPO}:${MAX}"
+          MAX_DIGEST=$(docker buildx imagetools inspect "${REPO}:${MAX}" | awk '/Digest:/ {print $2; exit}')
+          LATEST_DIGEST=$(docker buildx imagetools inspect "${REPO}:latest" 2>/dev/null | awk '/Digest:/ {print $2; exit}' || true)
+
+          echo "Max tag:    ${REPO}:${MAX}  digest=${MAX_DIGEST}"
+          echo "Latest tag: ${REPO}:latest  digest=${LATEST_DIGEST:-<missing>}"
+
+          if [ -n "${LATEST_DIGEST:-}" ] && [ "${LATEST_DIGEST}" = "${MAX_DIGEST}" ]; then
+            echo "GHCR latest tag is already correct"
+            exit 0
+          fi
+
+          echo "Updating GHCR latest tag -> ${MAX}"
+          docker buildx imagetools create --tag "${REPO}:latest" "${REPO}:${MAX}"
