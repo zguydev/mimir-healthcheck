@@ -9,74 +9,116 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ghcr-build-mimir-healthcheck
+  cancel-in-progress: false
+
 jobs:
-  detect-and-build:
-    name: Detect new upstream and build
+  detect:
+    name: Detect missing upstream tags
     runs-on: ubuntu-latest
+    outputs:
+      missing_tags: ${{ steps.collect.outputs.missing_tags }}
+      max_version: ${{ steps.collect.outputs.max_version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Detect newest and max upstream semver tags
-        id: upstream
-        run: |
-          set -euo pipefail
-          DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
-          # Most recently updated semver (could be a backport like 2.16.x after 2.17.0)
-          NEWEST=$(echo "$DATA" \
-            | jq -r '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$"))] | sort_by(.last_updated) | last | .name')
-          # Maximum semver (the highest X.Y.Z, strict semver tags only)
-          MAX=$(echo "$DATA" \
-            | jq -r '.results[].name' \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V \
-            | tail -n1)
-          if [ -z "${NEWEST}" ] || [ -z "${MAX}" ]; then
-            echo "No semver tags found on Docker Hub in 100 recent tags" >&2
-            exit 1
-          fi
-          echo "Newest upstream tag: ${NEWEST} (max semver: ${MAX})"
-          echo "version=${NEWEST}" >> "$GITHUB_OUTPUT"
-          echo "max_version=${MAX}" >> "$GITHUB_OUTPUT"
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR (for manifest inspect)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check if GHCR tag already exists
-        id: check
+      - name: Collect missing tags (recent window) + current max semver
+        id: collect
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.version }}"
-          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "Image already exists: $IMAGE"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Image does not exist: $IMAGE"
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+
+          WINDOW=20
+          # Fetch more for MAX so latest tag is correct even if max isn't in the last WINDOW tags
+          DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
+
+          CANDIDATES_JSON=$(echo "$DATA" | jq -c --argjson w "$WINDOW" '
+            [.results[]
+              | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$"))
+              | {name, last_updated}
+            ]
+            | sort_by(.last_updated)
+            | reverse
+            | .[0:$w]
+            | map(.name)
+          ')
+
+          # Max stable semver from the same page (strict X.Y.Z)
+          MAX=$(echo "$DATA" \
+            | jq -r '.results[].name' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n1)
+
+          if [ -z "${MAX}" ]; then
+            echo "No stable semver tags found on Docker Hub in 100 recent tags" >&2
+            exit 1
           fi
+
+          echo "Candidate tags (window=${WINDOW}): $(echo "$CANDIDATES_JSON" | jq -r 'join(", ")')"
+          echo "Max stable semver (for latest): ${MAX}"
+
+          # Determine which candidate tags are missing in GHCR
+          MISSING=()
+          while IFS= read -r tag; do
+            IMAGE="ghcr.io/${{ github.repository }}:${tag}"
+            if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+              echo "Exists in GHCR: $tag"
+            else
+              echo "Missing in GHCR: $tag"
+              MISSING+=("$tag")
+            fi
+          done < <(echo "$CANDIDATES_JSON" | jq -r '.[]')
+
+          # Output missing tags as JSON array for matrix
+          MISSING_JSON=$(printf '%s\n' "${MISSING[@]:-}" | jq -R . | jq -s .)
+          echo "missing_tags=${MISSING_JSON}" >> "$GITHUB_OUTPUT"
+          echo "max_version=${MAX}" >> "$GITHUB_OUTPUT"
+  build:
+    name: Build missing tags
+    needs: detect
+    if: needs.detect.outputs.missing_tags != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 3
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect.outputs.missing_tags) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up QEMU
-        if: steps.check.outputs.exists == 'false'
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
-        if: steps.check.outputs.exists == 'false'
         uses: docker/setup-buildx-action@v3
       - name: Compute tags to push
-        if: steps.check.outputs.exists == 'false'
         id: taglist
         run: |
           set -euo pipefail
-          TAGS=("ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.version }}")
-          if [ "${{ steps.upstream.outputs.version }}" = "${{ steps.upstream.outputs.max_version }}" ]; then
+          VERSION="${{ matrix.version }}"
+          TAGS=("ghcr.io/${{ github.repository }}:${VERSION}")
+
+          # Only current max stable semver gets latest tag
+          if [ "${VERSION}" = "${{ needs.detect.outputs.max_version }}" ]; then
             TAGS=("ghcr.io/${{ github.repository }}:latest" "${TAGS[@]}")
           fi
+
           {
             echo "list<<EOF"
             printf '%s\n' "${TAGS[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
       - name: Extract image annotations
-        if: steps.check.outputs.exists == 'false'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -86,14 +128,13 @@ jobs:
             org.opencontainers.image.description=Grafana Mimir image with healthcheck
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.upstream.outputs.version }}
+            org.opencontainers.image.version=${{ matrix.version }}
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.authors=zguydev <zguy@zguy.dev>
             org.opencontainers.image.created=${{ github.run_started_at }}
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
       - name: Build and push image
-        if: steps.check.outputs.exists == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -102,7 +143,40 @@ jobs:
           tags: ${{ steps.taglist.outputs.list }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
-            MIMIR_IMAGE_TAG=${{ steps.upstream.outputs.version }}
-      - name: Up-to-date (no new version)
-        if: steps.check.outputs.exists == 'true'
-        run: echo "No new upstream semver tag to build"
+            MIMIR_IMAGE_TAG=${{ matrix.version }}
+  up_to_date:
+    name: Up-to-date
+    needs: detect
+    if: needs.detect.outputs.missing_tags == '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No missing tags to build in GHCR window"
+  ensure-latest:
+    name: Ensure GHCR latest points to max semver
+    needs: [detect, build, up_to_date]
+    if: needs.detect.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Retag as latest to current max stable semver (no rebuild)
+        run: |
+          set -euo pipefail
+          MAX="${{ needs.detect.outputs.max_version }}"
+          REPO="ghcr.io/${{ github.repository }}"
+
+          if ! docker manifest inspect "${REPO}:${MAX}" >/dev/null 2>&1; then
+            echo "Max version ${MAX} not present in GHCR; not updating :latest" >&2
+            exit 0
+          fi
+
+          echo "Ensuring ${REPO}:latest -> ${REPO}:${MAX}"
+          docker buildx imagetools create \
+            --tag "${REPO}:latest" \
+            "${REPO}:${MAX}"

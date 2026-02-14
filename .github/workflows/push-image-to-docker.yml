@@ -10,35 +10,108 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: dockerhub-mirror-mimir-healthcheck
+  cancel-in-progress: false
+
 jobs:
-  mirror-from-ghcr:
-    name: Mirror image from GHCR to Docker Hub
+  detect:
+    name: Detect missing tags on Docker Hub
     runs-on: ubuntu-latest
+    outputs:
+      missing_tags: ${{ steps.collect.outputs.missing_tags }}
+      max_version: ${{ steps.collect.outputs.max_version }}
+      repo_name: ${{ steps.repo.outputs.name }}
     steps:
       - name: Derive repository name
         id: repo
         run: echo "name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
-      - name: Detect newest and max upstream semver tags
-        id: upstream
+      - name: Log in to GHCR (for source manifest inspect)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to Docker Hub (for dest manifest inspect)
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Collect tags to mirror (recent window) + current max semver
+        id: collect
         run: |
           set -euo pipefail
+
+          WINDOW=50
           DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
-          # Most recently updated semver (could be a backport like 2.16.x after 2.17.0)
-          NEWEST=$(echo "$DATA" \
-            | jq -r '[.results[] | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$"))] | sort_by(.last_updated) | last | .name')
-          # Maximum semver (the highest X.Y.Z)
+
+          CANDIDATES_JSON=$(echo "$DATA" | jq -c --argjson w "$WINDOW" '
+            [.results[]
+              | select(.name | test("^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$"))
+              | {name, last_updated}
+            ]
+            | sort_by(.last_updated)
+            | reverse
+            | .[0:$w]
+            | map(.name)
+          ')
+
           MAX=$(echo "$DATA" \
             | jq -r '.results[].name' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
             | tail -n1)
-          if [ -z "${NEWEST}" ] || [ -z "${MAX}" ]; then
-            echo "No semver tags found on Docker Hub in 100 recent tags" >&2
+
+          if [ -z "${MAX}" ]; then
+            echo "No stable semver tags found on Docker Hub in 100 recent tags" >&2
             exit 1
           fi
-          echo "Newest upstream tag: ${NEWEST} (max semver: ${MAX})"
-          echo "version=${NEWEST}" >> "$GITHUB_OUTPUT"
+
+          echo "Candidate tags (window=${WINDOW}): $(echo "$CANDIDATES_JSON" | jq -r 'join(", ")')"
+          echo "Max stable semver (for latest): ${MAX}"
+
+          GHCR_BASE="ghcr.io/${{ github.repository }}"
+          DH_BASE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}"
+
+          MISSING=()
+          while IFS= read -r tag; do
+            SRC="${GHCR_BASE}:${tag}"
+            DST="${DH_BASE}:${tag}"
+
+            # Only mirror tags that actually exist in GHCR (source of truth)
+            if ! docker manifest inspect "$SRC" >/dev/null 2>&1; then
+              echo "Skip (not in GHCR yet): $tag"
+              continue
+            fi
+
+            if docker manifest inspect "$DST" >/dev/null 2>&1; then
+              echo "Exists on Docker Hub: $tag"
+            else
+              echo "Missing on Docker Hub: $tag"
+              MISSING+=("$tag")
+            fi
+          done < <(echo "$CANDIDATES_JSON" | jq -r '.[]')
+
+          if [ "${#MISSING[@]}" -eq 0 ]; then
+            MISSING_JSON='[]'
+          else
+            MISSING_JSON=$(printf '%s\n' "${MISSING[@]}" | jq -R . | jq -s .)
+          fi
+
+          echo "missing_tags=${MISSING_JSON}" >> "$GITHUB_OUTPUT"
           echo "max_version=${MAX}" >> "$GITHUB_OUTPUT"
+  mirror:
+    name: Mirror missing tags
+    needs: detect
+    if: needs.detect.outputs.missing_tags != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.detect.outputs.missing_tags) }}
+    steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -50,29 +123,56 @@ jobs:
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Check if Docker Hub tag already exists
-        id: check
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Mirror manifest from GHCR to Docker Hub
         run: |
           set -euo pipefail
-          IMAGE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}:${{ steps.upstream.outputs.version }}"
-          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "Image already exists: $IMAGE"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Image does not exist: $IMAGE"
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Mirror manifest from GHCR to Docker Hub
-        if: steps.check.outputs.exists == 'false'
-        run : |
+          SRC="ghcr.io/${{ github.repository }}:${{ matrix.version }}"
+          DST_BASE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ needs.detect.outputs.repo_name }}"
+          docker buildx imagetools create \
+            --tag "${DST_BASE}:${{ matrix.version }}" \
+            "${SRC}"
+  up_to_date:
+    name: Up-to-date
+    needs: detect
+    if: needs.detect.outputs.missing_tags == '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No missing tags to mirror to Docker Hub in window"
+  ensure-latest:
+    name: Ensure Docker Hub latest points to max semver
+    needs: [detect, mirror, up_to_date]
+    if: needs.detect.result == 'success' && (needs.mirror.result == 'success' || needs.mirror.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Retag Docker Hub :latest to current max stable semver (no rebuild)
+        run: |
           set -euo pipefail
-          SRC="ghcr.io/${{ github.repository }}:${{ steps.upstream.outputs.version }}"
-          DST_BASE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ steps.repo.outputs.name }}"
-          TAG_ARGS=("--tag" "${DST_BASE}:${{ steps.upstream.outputs.version }}")
-          if [ "${{ steps.upstream.outputs.version }}" = "${{ steps.upstream.outputs.max_version }}" ]; then
-            TAG_ARGS=("--tag" "${DST_BASE}:latest" "${TAG_ARGS[@]}")
+          MAX="${{ needs.detect.outputs.max_version }}"
+          SRC="ghcr.io/${{ github.repository }}:${MAX}"
+          DST="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ needs.detect.outputs.repo_name }}:latest"
+
+          # Only update latest if the source exists in GHCR
+          if ! docker manifest inspect "$SRC" >/dev/null 2>&1; then
+            echo "Max version ${MAX} not present in GHCR; not updating Docker Hub :latest" >&2
+            exit 0
           fi
-          docker buildx imagetools create "${TAG_ARGS[@]}" "${SRC}"
-      - name: Up-to-date (no new version to mirror)
-        if: steps.check.outputs.exists == 'true'
-        run: echo "Docker Hub already has tag ${{ steps.upstream.outputs.version }}"
+
+          echo "Ensuring ${DST} -> ${SRC}"
+          docker buildx imagetools create \
+            --tag "${DST}" \
+            "${SRC}"
