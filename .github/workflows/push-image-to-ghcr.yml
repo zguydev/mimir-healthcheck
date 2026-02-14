@@ -75,6 +75,23 @@ jobs:
             printf '%s\n' "${TAGS[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+      - name: Extract image annotations
+        if: steps.check.outputs.exists == 'false'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          annotations: |
+            org.opencontainers.image.title=mimir-healthcheck
+            org.opencontainers.image.description=Grafana Mimir image with healthcheck
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.upstream.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.authors=zguydev <zguy@zguy.dev>
+            org.opencontainers.image.created=${{ github.run_started_at }}
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
       - name: Build and push image
         if: steps.check.outputs.exists == 'false'
         uses: docker/build-push-action@v6
@@ -83,6 +100,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.taglist.outputs.list }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             MIMIR_IMAGE_TAG=${{ steps.upstream.outputs.version }}
       - name: Up-to-date (no new version)
