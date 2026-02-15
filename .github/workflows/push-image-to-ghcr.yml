@@ -33,7 +33,6 @@ jobs:
           set -euo pipefail
 
           WINDOW=20
-          # Fetch more for MAX so latest tag is correct even if max isn't in the last WINDOW tags
           DATA=$(curl -fsSL "https://hub.docker.com/v2/repositories/grafana/mimir/tags?page_size=100")
 
           CANDIDATES_JSON=$(echo "$DATA" | jq -c --argjson w "$WINDOW" '
@@ -47,7 +46,6 @@ jobs:
             | map(.name)
           ')
 
-          # Max stable semver from the same page (strict X.Y.Z)
           MAX=$(echo "$DATA" \
             | jq -r '.results[].name' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -74,7 +72,6 @@ jobs:
             fi
           done < <(echo "$CANDIDATES_JSON" | jq -r '.[]')
 
-          # Output missing tags as JSON array for matrix
           if [ "${#MISSING[@]}" -eq 0 ]; then
             MISSING_JSON='[]'
           else
@@ -158,8 +155,12 @@ jobs:
       - run: echo "No missing tags to build in GHCR window"
   ensure-latest:
     name: Ensure GHCR latest points to max semver
-    needs: detect
-    if: needs.detect.result == 'success'
+    needs: [detect, build, up_to_date]
+    if: >
+      always() &&
+      needs.detect.result == 'success' &&
+      needs.build.result != 'failure' &&
+      needs.up_to_date.result != 'failure'
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
@@ -176,13 +177,30 @@ jobs:
           MAX="${{ needs.detect.outputs.max_version }}"
           REPO="ghcr.io/${{ github.repository }}"
 
-          if ! docker manifest inspect "${REPO}:${MAX}" >/dev/null 2>&1; then
-            echo "Max version ${MAX} not present in GHCR; not updating latest tag" >&2
+          if MAX_INSPECT=$(docker manifest inspect --verbose "${REPO}:${MAX}" 2>/dev/null); then
+            echo "Found max version tag in GHCR: ${REPO}:${MAX}"
+          else
+            echo "Max version tag ${MAX} not present in GHCR; not updating latest tag" >&2
             exit 0
           fi
 
-          MAX_DIGEST=$(docker buildx imagetools inspect "${REPO}:${MAX}" | awk '/Digest:/ {print $2; exit}')
-          LATEST_DIGEST=$(docker buildx imagetools inspect "${REPO}:latest" 2>/dev/null | awk '/Digest:/ {print $2; exit}' || true)
+          MAX_DIGEST=$(echo "${MAX_INSPECT}" | jq -r '
+            if type == "array" then .[0].Descriptor.digest // empty
+            else .Descriptor.digest // empty end
+          ')
+          if [ -z "${MAX_DIGEST}" ]; then
+            echo "Failed to parse digest for ${REPO}:${MAX}" >&2
+            exit 1
+          fi
+
+          LATEST_INSPECT=$(docker manifest inspect --verbose "${REPO}:latest" 2>/dev/null || true)
+          LATEST_DIGEST=""
+          if [ -n "${LATEST_INSPECT}" ]; then
+            LATEST_DIGEST=$(echo "${LATEST_INSPECT}" | jq -r '
+              if type == "array" then .[0].Descriptor.digest // empty
+              else .Descriptor.digest // empty end
+            ')
+          fi
 
           echo "Max tag:    ${REPO}:${MAX}  digest=${MAX_DIGEST}"
           echo "Latest tag: ${REPO}:latest  digest=${LATEST_DIGEST:-<missing>}"
