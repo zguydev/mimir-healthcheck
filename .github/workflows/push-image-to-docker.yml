@@ -142,8 +142,12 @@ jobs:
       - run: echo "No missing tags to mirror to Docker Hub in window"
   ensure-latest:
     name: Ensure Docker Hub latest points to max semver
-    needs: detect
-    if: needs.detect.result == 'success'
+    needs: [detect, mirror, up_to_date]
+    if: >
+      always() &&
+      needs.detect.result == 'success' &&
+      needs.mirror.result != 'failure' &&
+      needs.up_to_date.result != 'failure'
     runs-on: ubuntu-latest
     steps:
       - name: Login to Docker Hub
@@ -167,13 +171,30 @@ jobs:
           DST_BASE="docker.io/${{ vars.DOCKERHUB_USERNAME }}/${{ needs.detect.outputs.repo_name }}"
           DST="${DST_BASE}:latest"
 
-          if ! docker manifest inspect "$SRC" >/dev/null 2>&1; then
+          if SRC_INSPECT=$(docker manifest inspect --verbose "$SRC" 2>/dev/null); then
+            echo "Found max version tag in GHCR: ${SRC}"
+          else
             echo "Max version ${MAX} not present in GHCR; not updating Docker Hub :latest" >&2
             exit 0
           fi
 
-          SRC_DIGEST=$(docker buildx imagetools inspect "${SRC}" | awk '/Digest:/ {print $2; exit}')
-          DST_DIGEST=$(docker buildx imagetools inspect "${DST}" 2>/dev/null | awk '/Digest:/ {print $2; exit}' || true)
+          SRC_DIGEST=$(echo "${SRC_INSPECT}" | jq -r '
+            if type == "array" then .[0].Descriptor.digest // empty
+            else .Descriptor.digest // empty end
+          ')
+          if [ -z "${SRC_DIGEST}" ]; then
+            echo "Failed to parse digest for ${SRC}" >&2
+            exit 1
+          fi
+
+          DST_INSPECT=$(docker manifest inspect --verbose "${DST}" 2>/dev/null || true)
+          DST_DIGEST=""
+          if [ -n "${DST_INSPECT}" ]; then
+            DST_DIGEST=$(echo "${DST_INSPECT}" | jq -r '
+              if type == "array" then .[0].Descriptor.digest // empty
+              else .Descriptor.digest // empty end
+            ')
+          fi
 
           echo "Max tag:    ${SRC} (digest=${SRC_DIGEST})"
           echo "Latest tag: ${DST} (digest=${DST_DIGEST:-<missing>})"
