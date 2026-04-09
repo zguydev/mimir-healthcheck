@@ -1,0 +1,93 @@
+name: update Go patch version
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * *"  # every day at 07:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-go-patch
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update Go patch within current minor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve current and target Go versions
+        id: versions
+        run: |
+          set -euo pipefail
+
+          GO_VERSION=$(sed -nE 's/^go ([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' go.mod)
+          TOOLCHAIN_VERSION=$(sed -nE 's/^toolchain go([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' go.mod)
+          DOCKER_VERSION=$(sed -nE 's/^ARG GOLANG_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' Dockerfile)
+
+          if [ -z "${GO_VERSION}" ] || [ -z "${TOOLCHAIN_VERSION}" ] || [ -z "${DOCKER_VERSION}" ]; then
+            echo "Failed to parse Go versions from go.mod or Dockerfile" >&2
+            exit 1
+          fi
+
+          GO_MINOR=${GO_VERSION%.*}
+
+          if [ "${TOOLCHAIN_VERSION%.*}" != "${GO_MINOR}" ]; then
+            echo "Go toolchain version ${TOOLCHAIN_VERSION} is outside the go.mod minor ${GO_MINOR}.x" >&2
+            exit 1
+          fi
+
+          if [ "${DOCKER_VERSION%.*}" != "${GO_MINOR}" ]; then
+            echo "Dockerfile version ${DOCKER_VERSION} is outside the go.mod minor ${GO_MINOR}.x" >&2
+            exit 1
+          fi
+
+          TARGET_VERSION=$(
+            curl -fsSL "https://go.dev/dl/?mode=json" | jq -r --arg minor "${GO_MINOR}" '
+              [
+                .[]
+                | .version
+                | ltrimstr("go")
+                | select(test("^" + $minor + "\\.[0-9]+$"))
+              ]
+              | sort_by(split(".") | map(tonumber))
+              | last // empty
+            '
+          )
+
+          if [ -z "${TARGET_VERSION}" ]; then
+            echo "No Go release found for ${GO_MINOR}.x" >&2
+            exit 1
+          fi
+
+          echo "go_minor=${GO_MINOR}" >> "$GITHUB_OUTPUT"
+          echo "target_version=${TARGET_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Update go.mod and Dockerfile
+        run: |
+          set -euo pipefail
+
+          GO_MINOR="${{ steps.versions.outputs.go_minor }}"
+          TARGET_VERSION="${{ steps.versions.outputs.target_version }}"
+
+          sed -i -E "s/^go ${GO_MINOR}\.[0-9]+$/go ${TARGET_VERSION}/" go.mod
+          sed -i -E "s/^toolchain go${GO_MINOR}\.[0-9]+$/toolchain go${TARGET_VERSION}/" go.mod
+          sed -i -E "s/^ARG GOLANG_VERSION=${GO_MINOR}\.[0-9]+$/ARG GOLANG_VERSION=${TARGET_VERSION}/" Dockerfile
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: workflow/update_go/go-${{ steps.versions.outputs.target_version }}
+          commit-message: "chore(deps): update Go to ${{ steps.versions.outputs.target_version }}"
+          title: "chore(deps): update Go to ${{ steps.versions.outputs.target_version }}"
+          body: |
+            Updates the Go toolchain to `${{ steps.versions.outputs.target_version }}`.
+
+            This PR only updates patch releases within the existing `go.mod`.
+          labels: dependencies
+          delete-branch: true
