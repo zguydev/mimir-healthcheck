@@ -82,6 +82,7 @@ jobs:
       - name: Create pull request
         uses: peter-evans/create-pull-request@v8
         with:
+          token: ${{ secrets.CREATE_PR_TOKEN }}
           branch: workflow/update_go/go-${{ steps.versions.outputs.target_version }}
           commit-message: "chore(deps): update Go to ${{ steps.versions.outputs.target_version }}"
           title: "chore(deps): update Go to ${{ steps.versions.outputs.target_version }}"
