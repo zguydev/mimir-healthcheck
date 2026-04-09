@@ -1,4 +1,4 @@
 module github.com/zguydev/mimir-healthcheck
 
 go 1.25.0
-toolchain go1.25.7
+toolchain go1.25.9
