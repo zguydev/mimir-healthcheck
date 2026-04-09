@@ -75,7 +75,6 @@ jobs:
           GO_MINOR="${{ steps.versions.outputs.go_minor }}"
           TARGET_VERSION="${{ steps.versions.outputs.target_version }}"
 
-          sed -i -E "s/^go ${GO_MINOR}\.[0-9]+$/go ${TARGET_VERSION}/" go.mod
           sed -i -E "s/^toolchain go${GO_MINOR}\.[0-9]+$/toolchain go${TARGET_VERSION}/" go.mod
           sed -i -E "s/^ARG GOLANG_VERSION=${GO_MINOR}\.[0-9]+$/ARG GOLANG_VERSION=${TARGET_VERSION}/" Dockerfile
 
