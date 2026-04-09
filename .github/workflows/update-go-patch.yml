@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve current and target Go versions
         id: versions
@@ -80,7 +80,7 @@ jobs:
           sed -i -E "s/^ARG GOLANG_VERSION=${GO_MINOR}\.[0-9]+$/ARG GOLANG_VERSION=${TARGET_VERSION}/" Dockerfile
 
       - name: Create pull request
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: workflow/update_go/go-${{ steps.versions.outputs.target_version }}
           commit-message: "chore(deps): update Go to ${{ steps.versions.outputs.target_version }}"
